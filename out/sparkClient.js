@@ -34,8 +34,40 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SparkClient = void 0;
+exports.getTextFromContent = getTextFromContent;
+exports.countImagesInContent = countImagesInContent;
+exports.estimateTokensForContent = estimateTokensForContent;
+exports.contentToApiPayload = contentToApiPayload;
 const vscode = __importStar(require("vscode"));
 const costTracker_1 = require("./costTracker");
+function getTextFromContent(content) {
+    if (typeof content === 'string')
+        return content;
+    return content.filter(p => p.type === 'text').map(p => p.text).join('\n');
+}
+function countImagesInContent(content) {
+    if (typeof content === 'string')
+        return 0;
+    return content.filter(p => p.type === 'image_url').length;
+}
+function estimateTokensForContent(content) {
+    if (typeof content === 'string')
+        return (0, costTracker_1.estimateTokens)(content);
+    let tokens = 0;
+    for (const p of content) {
+        if (p.type === 'text')
+            tokens += (0, costTracker_1.estimateTokens)(p.text);
+        else if (p.type === 'image_url') {
+            // Rough estimate: ~85 tokens low, ~170*tiles high; use 1024 as safe avg for cost tracking
+            const detail = p.image_url.detail || 'auto';
+            tokens += detail === 'low' ? 85 : detail === 'high' ? 1024 : 512;
+        }
+    }
+    return tokens;
+}
+function contentToApiPayload(content) {
+    return content;
+}
 class SparkClient {
     getConfig() {
         const cfg = vscode.workspace.getConfiguration('museSpark');
@@ -79,10 +111,24 @@ class SparkClient {
             tracker.addEstimatedUsage(inputText, outputText, model, label);
         }
     }
+    /** Helper to get text representation for token estimation / logging */
+    messagesToInputText(messages) {
+        return messages.map(m => {
+            if (typeof m.content === 'string')
+                return m.content;
+            return m.content.map(p => p.type === 'text' ? p.text : `[image:${p.image_url.detail || 'auto'}]`).join('\n');
+        }).join('\n');
+    }
+    estimateInputTokens(messages) {
+        let t = 0;
+        for (const m of messages)
+            t += estimateTokensForContent(m.content);
+        return t;
+    }
     async chat(messages, onDelta, label = 'chat') {
         const { apiKey, endpoint, model, systemPrompt, showCost } = this.getConfig();
         const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
-        const inputText = fullMessages.map(m => m.content).join('\n');
+        const inputText = this.messagesToInputText(fullMessages);
         if (!apiKey) {
             const out = await this.mockChat(messages, onDelta, label);
             return out;
@@ -168,7 +214,14 @@ class SparkClient {
         if (!apiKey)
             throw new Error('A Meta Model API key is required for agent mode. Set museSpark.apiKey in VS Code Settings.');
         const fullMessages = [{ role: 'system', content: systemPrompt }, ...messages];
-        const inputText = fullMessages.map((m) => m.content || JSON.stringify(m)).join('\n');
+        const inputText = fullMessages.map((m) => {
+            const c = m.content;
+            if (typeof c === 'string')
+                return c;
+            if (Array.isArray(c))
+                return c.map((p) => p.type === 'text' ? p.text : `[image:${p.image_url?.detail || 'auto'}]`).join('\n');
+            return c ? JSON.stringify(c) : JSON.stringify(m);
+        }).join('\n');
         const body = {
             model,
             messages: fullMessages,
@@ -200,18 +253,32 @@ class SparkClient {
         return message;
     }
     async mockChat(messages, onDelta, label = 'chat') {
-        const last = messages[messages.length - 1]?.content || '';
+        const lastContent = messages[messages.length - 1]?.content;
+        const last = typeof lastContent === 'string' ? lastContent : getTextFromContent(lastContent) || '';
+        const lastImages = Array.isArray(lastContent) ? countImagesInContent(lastContent) : 0;
         const { model } = this.getConfig();
         const p = this.getPricing(model);
-        const mockResponse = `**[Mock Mode - ${model}]**\n\nPricing: ${p.label}\n\nYou asked: "${last.slice(0, 200)}"\n\nWhen connected to https://api.meta.ai/v1 : model id = rate.\n\n> Tip: Set \`museSpark.apiKey\` to enable live calls. Token usage will be estimated in mock mode and shown in the Cost Tracker.`;
+        const imageNote = lastImages ? ` [${lastImages} image(s) attached]` : '';
+        const mockResponse = `**[Mock Mode - ${model}]**\n\nPricing: ${p.label}\n\nYou asked: "${last.slice(0, 200)}"${imageNote}\n\nWhen connected to https://api.meta.ai/v1 : model id = rate.\n\n> Tip: Set \`museSpark.apiKey\` to enable live calls. Token usage will be estimated in mock mode and shown in the Cost Tracker.${lastImages ? `\n\n> Image support: your ${lastImages} image(s) would be sent as \`image_url\` parts in live mode.` : ''}`;
         if (onDelta) {
             for (const chunk of mockResponse.split(/(\s+)/)) {
                 await new Promise(r => setTimeout(r, 12));
                 onDelta(chunk);
             }
         }
-        // Report estimated usage for mock
-        const inputText = messages.map(m => m.content).join('\n');
+        // Report estimated usage for mock - include image token cost
+        const inputText = this.messagesToInputText(messages);
+        // Add image token estimate to usage manually for accurate cost
+        const imageTokens = messages.reduce((s, m) => s + (typeof m.content === 'string' ? 0 : countImagesInContent(m.content) * 512), 0);
+        if (imageTokens > 0) {
+            const textTokens = this.estimateInputTokens(messages);
+            const outTokens = (0, costTracker_1.estimateTokens)(mockResponse);
+            const tracker = this.getTracker();
+            if (tracker) {
+                tracker.addUsage({ inputTokens: textTokens, outputTokens: outTokens, model, label: `${label} (mock)` });
+                return mockResponse;
+            }
+        }
         this.reportUsage(inputText, mockResponse, model, `${label} (mock)`);
         return mockResponse;
     }
@@ -226,6 +293,94 @@ class SparkClient {
     }
     async generateDocs(code, language) {
         return this.chat([{ role: 'user', content: `Generate documentation (JSDoc/docstring style) for this ${language} code. Return only documented code:\n\n${code}` }], undefined, 'docs');
+    }
+    // ── Live billing — unpaid charges (polled every 5 min by BillingTracker) ──
+    getBillingEndpoints() {
+        const { endpoint } = this.getConfig();
+        const cfg = vscode.workspace.getConfiguration('museSpark');
+        const override = cfg.get('billingEndpoint')?.trim();
+        if (override)
+            return [override];
+        let base = (endpoint || 'https://api.meta.ai/v1/chat/completions').trim().replace(/\/+$/, '').replace(/\/chat\/completions\/?$/, '');
+        return [...new Set([
+                `${base}/billing/balance`,
+                `${base}/billing/unpaid`,
+                `${base}/billing/subscription`,
+                `${base}/credits/balance`,
+                `${base}/dashboard/billing/credit_grants`,
+                `${base}/billing`,
+            ])];
+    }
+    async fetchLiveBilling() {
+        const { apiKey } = this.getConfig();
+        if (!apiKey)
+            throw new Error('No API key — set museSpark.apiKey to enable live billing');
+        const endpoints = this.getBillingEndpoints();
+        let lastErr = '';
+        for (const url of endpoints) {
+            try {
+                const res = await fetch(url, { method: 'GET', headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' } });
+                if (res.status === 404) {
+                    lastErr = `404 ${url}`;
+                    continue;
+                }
+                if (!res.ok)
+                    throw new Error(`Billing API ${res.status} at ${url}: ${(await res.text()).slice(0, 500)}`);
+                const json = await res.json();
+                // Reuse same parsing heuristics as BillingTracker
+                let unpaid;
+                for (const k of ['unpaid', 'unpaid_amount', 'amount_due', 'outstanding', 'pending_charges', 'balance_due']) {
+                    const v = json[k] ?? json.data?.[k] ?? json.billing?.[k];
+                    if (typeof v === 'number') {
+                        unpaid = v;
+                        break;
+                    }
+                    if (typeof v === 'string' && !isNaN(parseFloat(v))) {
+                        unpaid = parseFloat(v);
+                        break;
+                    }
+                }
+                if (unpaid === undefined && typeof json.total_used === 'number')
+                    unpaid = json.total_used;
+                if (unpaid === undefined)
+                    unpaid = 0;
+                const currency = json.currency || json.currency_code || json.data?.currency || 'USD';
+                const balance = typeof json.balance === 'number' ? json.balance : undefined;
+                return { unpaid, currency, balance, raw: json, fetchedAt: Date.now() };
+            }
+            catch (e) {
+                lastErr = e.message;
+                if (String(e.message).includes('404') && endpoints.indexOf(url) < endpoints.length - 1)
+                    continue;
+                if (endpoints.indexOf(url) === endpoints.length - 1)
+                    throw e;
+                // try next fallback for 404-like
+                if (String(e.message).includes('404'))
+                    continue;
+                throw e;
+            }
+        }
+        throw new Error(lastErr || 'All billing endpoints failed');
+    }
+    /** Start a 5-min polling loop for live unpaid charges. Returns a Disposable to stop. */
+    startBillingPolling(onUpdate, intervalMs = 5 * 60 * 1000) {
+        let stopped = false;
+        let timer;
+        const tick = async () => {
+            if (stopped)
+                return;
+            try {
+                const info = await this.fetchLiveBilling();
+                onUpdate?.({ unpaid: info.unpaid, currency: info.currency, fetchedAt: info.fetchedAt });
+            }
+            catch (e) {
+                onUpdate?.({ unpaid: 0, currency: 'USD', fetchedAt: Date.now(), error: e.message });
+            }
+        };
+        void tick();
+        timer = setInterval(tick, intervalMs);
+        return { dispose: () => { stopped = true; if (timer)
+                clearInterval(timer); } };
     }
 }
 exports.SparkClient = SparkClient;

@@ -5,7 +5,7 @@ import { CostTracker } from './costTracker';
 import { promises as fs } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveApprovalMode } from './sessionStore';
+import { resolveApprovalMode, resolvePlanMode } from './sessionStore';
 
 export interface MuseCliEvent {
   type: 'status' | 'tool' | 'delta' | 'reasoning';
@@ -19,14 +19,14 @@ export class MuseCliClient {
 
   getSessionId(): string { return this.sessionId; }
 
-  resetSession() {
+  resetSession(id: string = randomUUID()) {
     this.stop();
-    this.sessionId = randomUUID();
+    this.sessionId = id;
   }
 
-  forkSession() {
+  forkSession(id: string = randomUUID()) {
     this.stop();
-    this.sessionId = randomUUID();
+    this.sessionId = id;
   }
 
   resumeSession(id: string) {
@@ -54,9 +54,13 @@ export class MuseCliClient {
     const workspace = toWslPath(folder.uri.fsPath);
     const cfg = vscode.workspace.getConfiguration('museSpark');
     const approvalMode = resolveApprovalMode();
-    const fullAccess = approvalMode === 'fullAccess';
+    const planMode = resolvePlanMode();
+    const fullAccess = approvalMode === 'fullAccess' && planMode !== 'plan';
 
-    if (approvalMode !== 'fullAccess') {
+    if (planMode === 'plan') {
+      const ok = await vscode.window.showInformationMessage('Plan Mode is active — Muse will produce a plan only (no edits).', { modal: true }, 'Generate plan', 'Cancel');
+      if (ok !== 'Generate plan') throw new Error('Plan generation cancelled.');
+    } else if (approvalMode !== 'fullAccess') {
       const label = approvalMode === 'readOnly' ? 'Read-Only (suggest only)' : 'Auto';
       const approval = await vscode.window.showWarningMessage(
         `Allow Muse Code to run in ${label} mode for this task?`,
@@ -71,19 +75,24 @@ export class MuseCliClient {
     const musePath = cfg.get<string>('cliPath') || '/root/.local/bin/muse';
     const promptDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'muse-spark-'));
     const promptFile = path.join(promptDirectory, 'prompt.txt');
-    await fs.writeFile(promptFile, prompt, 'utf8');
+    const effectivePrompt = planMode === 'plan'
+      ? `[PLAN MODE — READ ONLY. Do NOT edit files or run mutating commands. Produce a detailed plan via update_plan and summarize it.]\n\n${prompt}`
+      : prompt;
+    await fs.writeFile(promptFile, effectivePrompt, 'utf8');
     const args = [
       '-d', 'Ubuntu', '--', musePath, 'exec', '--json', '--prompt-file', toWslPath(promptFile),
       '--workspace', workspace, '--session-id', this.sessionId,
       '--model', model, '--reasoning-effort', effort,
       '--max-model-steps', String(maxSteps), '--trust-workspace', '--enable-shell-tool'
     ];
-    if (fullAccess) args.push('--yolo');
+    if (planMode === 'plan') {
+      args.push('--approval-mode', 'never');
+    } else if (fullAccess) args.push('--yolo');
     else if (approvalMode === 'readOnly') args.push('--approval-mode', 'never');
     else args.push('--approval-mode', 'auto');
 
     this.killed = false;
-    emit({ type: 'status', text: `Starting Muse Code (${approvalMode})…` });
+    emit({ type: 'status', text: planMode === 'plan' ? `Starting Muse Code (plan mode)…` : `Starting Muse Code (${approvalMode})…` });
     return new Promise<string>((resolve, reject) => {
       const child = spawn('wsl.exe', args, { cwd: folder.uri.fsPath, windowsHide: true });
       this.activeProcess = child;
@@ -106,7 +115,7 @@ export class MuseCliClient {
           emit({ type: 'reasoning', text: payload.text });
         } else if (event.payload_type === 'task.lifecycle.side_effect_intent') {
           const description = describeMuseOperation(payload.event?.operation, payload.event?.display?.prompt_preview);
-          if (description) emit({ type: 'tool', text: description });
+          if (description) emit({ type: 'status', text: `${description}…` });
         } else if (event.payload_type === 'task.lifecycle.failed' && payload.event?.reason) {
           emit({ type: 'tool', text: `Failed: ${String(payload.event.reason).slice(0, 300)}` });
         } else if (event.payload_type === 'run.terminal.completed' && !fullText && payload.text) {
@@ -146,8 +155,9 @@ export class MuseCliClient {
         }
         try {
           const usage = await readMuseUsage(this.sessionId, runId);
+          for (const activity of usage.activities) emit({ type: 'tool', text: activity });
           if (usage.inputTokens || usage.outputTokens) {
-            CostTracker.getInstance().addUsage({ ...usage, model: usage.model || model, label: 'Muse Code CLI' });
+            CostTracker.getInstance().addUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, model: usage.model || model, label: 'Muse Code CLI' });
           } else {
             CostTracker.getInstance().addEstimatedUsage(prompt, fullText, model, 'Muse Code CLI');
           }
@@ -187,11 +197,11 @@ function describeMuseOperation(operation: unknown, preview: unknown): string | u
   return detail ? `${label}: ${detail}` : label;
 }
 
-async function readMuseUsage(sessionId: string, runId: string): Promise<{ inputTokens: number; outputTokens: number; model: string }> {
+async function readMuseUsage(sessionId: string, runId: string): Promise<{ inputTokens: number; outputTokens: number; model: string; activities: string[] }> {
   if (!/^[0-9a-f-]{36}$/i.test(sessionId) || (runId && !/^[0-9a-f-]{36}$/i.test(runId))) {
     throw new Error('Invalid Muse session identifier.');
   }
-  const script = `p=$(find /root/.local/share/muse/sessions -path '*/${sessionId}/session.jsonl' -print -quit); [ -n "$p" ] && grep '"kind":"model_completed"' "$p"`;
+  const script = `p=$(find /root/.local/share/muse/sessions -path '*/${sessionId}/session.jsonl' -print -quit); [ -n "$p" ] && grep -E '"kind":"(model_completed|assistant_tool_calls_committed)"' "$p"`;
   return new Promise((resolve, reject) => {
     const child = spawn('wsl.exe', ['-d', 'Ubuntu', '--', 'bash', '-lc', script], { windowsHide: true });
     let output = '';
@@ -202,21 +212,54 @@ async function readMuseUsage(sessionId: string, runId: string): Promise<{ inputT
       let inputTokens = 0;
       let outputTokens = 0;
       let model = '';
+      const activities: string[] = [];
       for (const line of output.split(/\r?\n/)) {
         if (!line.trim()) continue;
         try {
           const record = JSON.parse(line);
           const event = record.payload?.event;
-          if (event?.kind !== 'model_completed') continue;
           if (runId && record.payload?.run_id !== runId) continue;
-          inputTokens += Number(event.usage?.input_tokens) || 0;
-          outputTokens += Number(event.usage?.output_tokens) || 0;
-          model = event.model || model;
+          if (event?.kind === 'model_completed') {
+            inputTokens += Number(event.usage?.input_tokens) || 0;
+            outputTokens += Number(event.usage?.output_tokens) || 0;
+            model = event.model || model;
+          } else if (event?.kind === 'assistant_tool_calls_committed') {
+            for (const call of event.tool_calls || []) {
+              const description = describeToolCall(call.name, call.args);
+              if (description) activities.push(description);
+            }
+          }
         } catch {}
       }
-      resolve({ inputTokens, outputTokens, model });
+      resolve({ inputTokens, outputTokens, model, activities });
     });
   });
+}
+
+function describeToolCall(nameValue: unknown, argsValue: unknown): string | undefined {
+  const name = String(nameValue || '').replace(/^tool:/, '');
+  let args: any = {};
+  try { args = typeof argsValue === 'string' ? JSON.parse(argsValue) : (argsValue || {}); } catch {}
+  const target = args.path || args.file_path || args.file || args.pattern || args.query;
+  const quotedTarget = target ? ` \`${String(target).replace(/`/g, '')}\`` : '';
+
+  switch (name) {
+    case 'read_file': return `Read${quotedTarget || ' a workspace file'}`;
+    case 'edit_file': return `Edited${quotedTarget || ' a workspace file'}`;
+    case 'write_file': return `Wrote${quotedTarget || ' a workspace file'}`;
+    case 'search': return `Searched${quotedTarget ? ` for${quotedTarget}` : ' the workspace'}`;
+    case 'list_files': return `Listed workspace files${quotedTarget ? ` matching${quotedTarget}` : ''}`;
+    case 'shell':
+    case 'bash': {
+      const command = String(args.command || args.cmd || '').trim().replace(/\s+/g, ' ').slice(0, 220);
+      return command ? `Ran \`${command.replace(/`/g, '')}\`` : 'Ran a terminal command';
+    }
+    case 'get_diagnostics': return 'Checked editor diagnostics';
+    case 'subagent_spawn': return `Started background agent${args.task ? `: ${String(args.task).slice(0, 140)}` : ''}`;
+    case 'subagent_wait': return 'Waited for background agents';
+    case 'read_skill': return `Loaded task instructions${quotedTarget}`;
+    default: return name && !name.startsWith('model.') ? `Used ${name.replace(/[._-]+/g, ' ')}` : undefined;
+  }
 }
 
 function toWslPath(windowsPath: string): string {

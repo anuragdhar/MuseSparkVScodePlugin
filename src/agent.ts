@@ -4,7 +4,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { SparkClient } from './sparkClient';
 import { applyPatch } from './patch';
-import { resolveApprovalMode, isWriteAllowed, requiresApprovalForWrite, requiresApprovalForTerminal, isDangerousCommand, isSafeWorkspaceCommand } from './sessionStore';
+import { resolveApprovalMode, resolvePlanMode, isWriteAllowed, requiresApprovalForWrite, requiresApprovalForTerminal, isDangerousCommand, isSafeWorkspaceCommand } from './sessionStore';
 
 const execAsync = promisify(exec);
 
@@ -64,14 +64,24 @@ export class WorkspaceAgent {
     const cfg = vscode.workspace.getConfiguration('museSpark');
     const maxSteps = Math.min(Math.max(cfg.get<number>('cliMaxSteps') || 50, 1), 500);
     const approvalMode = resolveApprovalMode();
+    const planMode = resolvePlanMode();
     const autoVerify = cfg.get<boolean>('autoVerify') ?? true;
 
     // Inject Codex-style system guidance if not already present
     if (!messages.some(m => m.role === 'system' && String(m.content).includes('apply_patch'))) {
+      const planExtra = planMode === 'plan'
+        ? '\n- PLAN MODE IS ACTIVE: You MUST NOT edit files, write files, or run terminal commands. Your ONLY allowed actions are list_files, read_file, search_files, get_diagnostics, and update_plan. Produce a detailed markdown plan via update_plan and then summarize it. Explain that the user must approve the plan before execution.'
+        : '';
       messages.unshift({
         role: 'system',
-        content: `You are a Codex-style agentic coder. Rules:\n- Use update_plan for multi-step tasks.\n- Prefer apply_patch for all file edits (atomic, reviewable). Never use write_file unless creating a brand new file.\n- Always read relevant files before editing.\n- After edits, call get_diagnostics and fix errors before finishing.\n- Keep responses concise; explain what you changed.\n- Approval mode is ${approvalMode}. In readOnly you must explain patch but not apply it.`
+        content: `You are a Codex-style agentic coder. Rules:\n- Use update_plan for multi-step tasks.\n- Prefer apply_patch for all file edits (atomic, reviewable). Never use write_file unless creating a brand new file.\n- Always read relevant files before editing.\n- After edits, call get_diagnostics and fix errors before finishing.\n- Keep responses concise; explain what you changed.\n- Approval mode is ${approvalMode}. In readOnly you must explain patch but not apply it.${planExtra}`
       });
+    } else if (planMode === 'plan') {
+      // Append plan constraint to existing system message
+      const sys = messages.find(m => m.role === 'system');
+      if (sys && typeof sys.content === 'string' && !sys.content.includes('PLAN MODE')) {
+        sys.content += '\n\nPLAN MODE IS ACTIVE: Do NOT edit files or run commands. Use update_plan only, then stop and ask for approval.';
+      }
     }
 
     // Load AGENTS.md if present
@@ -178,6 +188,13 @@ export class WorkspaceAgent {
       }
       return matches.join('\n') || '(no matches)';
     }
+    // Plan-mode guard: block any mutation regardless of approvalMode
+    const planModeActive = resolvePlanMode() === 'plan';
+    if (planModeActive && (name === 'apply_patch' || name === 'write_file' || name === 'replace_in_file' || name === 'run_terminal_command')) {
+      const hint = name === 'run_terminal_command' ? String(args.command).slice(0, 400) : String(args.patch || args.content || args.oldText || '').slice(0, 600);
+      return `BLOCKED by Plan Mode: ${name} is not allowed while plan mode is active. Create or update the plan via update_plan instead. User must run "Approve Plan & Execute" to enable writes.\nProposed:\n${hint}`;
+    }
+
     if (name === 'apply_patch') {
       if (!isWriteAllowed(approvalMode as any)) {
         return `Patch blocked (readOnly mode — proposal only):\n${String(args.patch).slice(0, 4000)}\n\nSwitch approval to Auto or Full Access to apply.`;
@@ -231,6 +248,12 @@ export class WorkspaceAgent {
     if (name === 'update_plan') {
       this.currentPlan = String(args.plan || '');
       emit({ type: 'plan', text: this.currentPlan });
+      // Persist plan to file for approval flow (.sparkrun/plan.md)
+      try {
+        const planUri = vscode.Uri.file(path.join(this.root().fsPath, '.sparkrun', 'plan.md'));
+        await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(planUri.fsPath)));
+        await vscode.workspace.fs.writeFile(planUri, Buffer.from(this.currentPlan, 'utf8'));
+      } catch {}
       return `Plan updated.\n${this.currentPlan}`;
     }
     throw new Error(`Unknown tool: ${name}`);

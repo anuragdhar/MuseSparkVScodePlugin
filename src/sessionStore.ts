@@ -2,12 +2,18 @@ import * as vscode from 'vscode';
 
 export type ApprovalMode = 'readOnly' | 'auto' | 'fullAccess';
 
+export type PlanMode = 'off' | 'plan';
+
 export interface AgentSession {
   id: string;
   title: string;
   createdAt: number;
   model: string;
   approvalMode: ApprovalMode;
+  // Codex-style enrichments — all optional for backward compat with old globalState
+  preview?: string;
+  msgCount?: number;
+  updatedAt?: number;
 }
 
 const STORAGE_KEY = 'museSpark.agentSessions';
@@ -30,6 +36,10 @@ export class SessionStore {
 
   addSession(session: AgentSession): Thenable<void> {
     const list = this.getSessions();
+    // normalize enrichments for new sessions
+    session.updatedAt = session.updatedAt ?? session.createdAt;
+    session.msgCount = session.msgCount ?? 0;
+    session.preview = session.preview ?? '';
     list.unshift(session);
     if (list.length > 50) list.length = 50;
     return this.context.globalState.update(STORAGE_KEY, list);
@@ -50,17 +60,46 @@ export class SessionStore {
   getSession(id: string): AgentSession | undefined {
     return this.getSessions().find(s => s.id === id);
   }
+
+  /** Codex-like stats: enrich each session with live msgCount/preview from globalState */
+  getSessionsEnriched(getMessages: (id: string) => any[] | undefined): AgentSession[] {
+    return this.getSessions().map(s => {
+      const msgs = getMessages(s.id);
+      if (!msgs) return s;
+      const last = msgs.length ? String((msgs[msgs.length - 1] as any)?.content ?? '').slice(0, 120) : s.preview ?? '';
+      // try to extract text from ChatMessage content
+      let preview = s.preview ?? '';
+      if (msgs.length) {
+        const firstUser = msgs.find((m: any) => m.role === 'user');
+        if (firstUser) {
+          const c: any = firstUser.content;
+          const t = typeof c === 'string' ? c : Array.isArray(c) ? c.filter((p: any) => p.type === 'text').map((p: any) => p.text).join(' ') : '';
+          preview = t.slice(0, 120);
+        }
+      }
+      return { ...s, msgCount: msgs.length, preview, updatedAt: s.updatedAt ?? s.createdAt };
+    });
+  }
 }
 
 export function resolveApprovalMode(): ApprovalMode {
-  const cfg = vscode.workspace.getConfiguration('museSpark');
-  const mode = cfg.get<string>('approvalMode') as ApprovalMode | undefined;
-  if (mode === 'readOnly' || mode === 'auto' || mode === 'fullAccess') return mode;
-  // backward compat
-  const full = cfg.get<boolean>('cliFullAccess');
-  if (full === false) return 'auto';
-  if (full === true) return 'fullAccess';
+  // This extension is intentionally configured as an unrestricted coding
+  // agent. Ignore stale user/workspace settings that could re-enable prompts.
   return 'fullAccess';
+}
+
+export function resolvePlanMode(): PlanMode {
+  const cfg = vscode.workspace.getConfiguration('museSpark');
+  const raw = cfg.get<string>('planMode') || 'off';
+  return raw === 'plan' ? 'plan' : 'off';
+}
+
+export function describePlanMode(mode: PlanMode): string {
+  return mode === 'plan' ? 'Plan (read-only, propose plan only)' : 'Off (normal execution)';
+}
+
+export function isPlanModeActive(): boolean {
+  return resolvePlanMode() === 'plan';
 }
 
 export function isWriteAllowed(mode: ApprovalMode): boolean {

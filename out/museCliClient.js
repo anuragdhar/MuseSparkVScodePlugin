@@ -49,13 +49,13 @@ class MuseCliClient {
         this.killed = false;
     }
     getSessionId() { return this.sessionId; }
-    resetSession() {
+    resetSession(id = (0, crypto_1.randomUUID)()) {
         this.stop();
-        this.sessionId = (0, crypto_1.randomUUID)();
+        this.sessionId = id;
     }
-    forkSession() {
+    forkSession(id = (0, crypto_1.randomUUID)()) {
         this.stop();
-        this.sessionId = (0, crypto_1.randomUUID)();
+        this.sessionId = id;
     }
     resumeSession(id) {
         if (!/^[0-9a-f-]{36}$/i.test(id))
@@ -146,7 +146,7 @@ class MuseCliClient {
                 else if (event.payload_type === 'task.lifecycle.side_effect_intent') {
                     const description = describeMuseOperation(payload.event?.operation, payload.event?.display?.prompt_preview);
                     if (description)
-                        emit({ type: 'tool', text: description });
+                        emit({ type: 'status', text: `${description}…` });
                 }
                 else if (event.payload_type === 'task.lifecycle.failed' && payload.event?.reason) {
                     emit({ type: 'tool', text: `Failed: ${String(payload.event.reason).slice(0, 300)}` });
@@ -190,8 +190,10 @@ class MuseCliClient {
                 }
                 try {
                     const usage = await readMuseUsage(this.sessionId, runId);
+                    for (const activity of usage.activities)
+                        emit({ type: 'tool', text: activity });
                     if (usage.inputTokens || usage.outputTokens) {
-                        costTracker_1.CostTracker.getInstance().addUsage({ ...usage, model: usage.model || model, label: 'Muse Code CLI' });
+                        costTracker_1.CostTracker.getInstance().addUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, model: usage.model || model, label: 'Muse Code CLI' });
                     }
                     else {
                         costTracker_1.CostTracker.getInstance().addEstimatedUsage(prompt, fullText, model, 'Muse Code CLI');
@@ -238,7 +240,7 @@ async function readMuseUsage(sessionId, runId) {
     if (!/^[0-9a-f-]{36}$/i.test(sessionId) || (runId && !/^[0-9a-f-]{36}$/i.test(runId))) {
         throw new Error('Invalid Muse session identifier.');
     }
-    const script = `p=$(find /root/.local/share/muse/sessions -path '*/${sessionId}/session.jsonl' -print -quit); [ -n "$p" ] && grep '"kind":"model_completed"' "$p"`;
+    const script = `p=$(find /root/.local/share/muse/sessions -path '*/${sessionId}/session.jsonl' -print -quit); [ -n "$p" ] && grep -E '"kind":"(model_completed|assistant_tool_calls_committed)"' "$p"`;
     return new Promise((resolve, reject) => {
         const child = (0, child_process_1.spawn)('wsl.exe', ['-d', 'Ubuntu', '--', 'bash', '-lc', script], { windowsHide: true });
         let output = '';
@@ -249,25 +251,60 @@ async function readMuseUsage(sessionId, runId) {
             let inputTokens = 0;
             let outputTokens = 0;
             let model = '';
+            const activities = [];
             for (const line of output.split(/\r?\n/)) {
                 if (!line.trim())
                     continue;
                 try {
                     const record = JSON.parse(line);
                     const event = record.payload?.event;
-                    if (event?.kind !== 'model_completed')
-                        continue;
                     if (runId && record.payload?.run_id !== runId)
                         continue;
-                    inputTokens += Number(event.usage?.input_tokens) || 0;
-                    outputTokens += Number(event.usage?.output_tokens) || 0;
-                    model = event.model || model;
+                    if (event?.kind === 'model_completed') {
+                        inputTokens += Number(event.usage?.input_tokens) || 0;
+                        outputTokens += Number(event.usage?.output_tokens) || 0;
+                        model = event.model || model;
+                    }
+                    else if (event?.kind === 'assistant_tool_calls_committed') {
+                        for (const call of event.tool_calls || []) {
+                            const description = describeToolCall(call.name, call.args);
+                            if (description)
+                                activities.push(description);
+                        }
+                    }
                 }
                 catch { }
             }
-            resolve({ inputTokens, outputTokens, model });
+            resolve({ inputTokens, outputTokens, model, activities });
         });
     });
+}
+function describeToolCall(nameValue, argsValue) {
+    const name = String(nameValue || '').replace(/^tool:/, '');
+    let args = {};
+    try {
+        args = typeof argsValue === 'string' ? JSON.parse(argsValue) : (argsValue || {});
+    }
+    catch { }
+    const target = args.path || args.file_path || args.file || args.pattern || args.query;
+    const quotedTarget = target ? ` \`${String(target).replace(/`/g, '')}\`` : '';
+    switch (name) {
+        case 'read_file': return `Read${quotedTarget || ' a workspace file'}`;
+        case 'edit_file': return `Edited${quotedTarget || ' a workspace file'}`;
+        case 'write_file': return `Wrote${quotedTarget || ' a workspace file'}`;
+        case 'search': return `Searched${quotedTarget ? ` for${quotedTarget}` : ' the workspace'}`;
+        case 'list_files': return `Listed workspace files${quotedTarget ? ` matching${quotedTarget}` : ''}`;
+        case 'shell':
+        case 'bash': {
+            const command = String(args.command || args.cmd || '').trim().replace(/\s+/g, ' ').slice(0, 220);
+            return command ? `Ran \`${command.replace(/`/g, '')}\`` : 'Ran a terminal command';
+        }
+        case 'get_diagnostics': return 'Checked editor diagnostics';
+        case 'subagent_spawn': return `Started background agent${args.task ? `: ${String(args.task).slice(0, 140)}` : ''}`;
+        case 'subagent_wait': return 'Waited for background agents';
+        case 'read_skill': return `Loaded task instructions${quotedTarget}`;
+        default: return name && !name.startsWith('model.') ? `Used ${name.replace(/[._-]+/g, ' ')}` : undefined;
+    }
 }
 function toWslPath(windowsPath) {
     // Codex parity: support both Windows and already-Unix paths (tests / Linux hosts)

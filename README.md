@@ -27,6 +27,7 @@ The sidebar uses `muse exec --json` by default. The extension:
 - Streams Muse JSON events and assistant output into the sidebar.
 - Lets Muse inspect and edit files, execute commands, and verify its changes.
 - Keeps one Muse session ID for follow-up messages.
+- Uses the same ID for the saved VS Code transcript and underlying Muse CLI session so resumed chats can continue executing tasks.
 - Starts a new Muse session when chat is cleared.
 - Supports configurable reasoning effort and maximum model steps.
 - Can run with unrestricted `--yolo` access or with the Muse sandbox enabled.
@@ -45,9 +46,11 @@ This route calls the Meta Model API directly; it does not run the Muse Code CLI 
 
 - Includes the active editor or selection when **Include active editor context** is enabled.
 - Shows tool activity and streaming responses.
-- Hides internal model-call noise and translates Muse tool events into readable activity such as reading files, editing files, searching, running commands, and checking diagnostics.
+- Hides internal model-call noise. While Muse works, the latest activity appears in the status line; after completion, exact file paths, searches, edits, and terminal commands are rendered from the Muse session log.
 - Provides an **Insert** button for fenced code blocks.
 - Supports follow-up prompts and clearing the active session.
+- Includes visible **Sessions** and **New** buttons for browsing, resuming, managing, or starting chats without slash commands.
+- Retains chat while the sidebar is hidden and restores persisted history when the view or VS Code window is recreated.
 - Can switch between the CLI and basic direct-API agent backends.
 
 ### Editor actions and completions
@@ -125,15 +128,7 @@ Without an API key, ordinary direct chat requests use demo/mock mode. The basic 
 
 ## Full access and safety
 
-Full access is enabled by default. In this mode Muse Code can run commands and change files without another approval prompt. To restore the safer mode:
-
-```json
-{
-  "museSpark.cliFullAccess": false
-}
-```
-
-The extension still scopes Muse's workspace argument to the first open workspace folder, but `--yolo` disables the CLI sandbox. Review generated changes and use source control for important projects.
+Full access is permanently enabled in this build. Muse Code runs with `--yolo`, so coding tasks can execute commands and change files without approval prompts. The extension still scopes Muse's workspace argument to the first open workspace folder, but `--yolo` disables the CLI sandbox. Review generated changes and use source control for important projects. Destructive session-management actions such as deleting a saved chat still request confirmation.
 
 ## Token usage and cost tracking
 

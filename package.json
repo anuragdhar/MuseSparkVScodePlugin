@@ -123,6 +123,49 @@
 			{
 				"command": "museSpark.copyCostSummary",
 				"title": "Muse Spark: Copy Cost Summary to Clipboard"
+			},
+			{
+				"command": "museSpark.refreshBilling",
+				"title": "Muse Spark: Refresh Live Billing (Unpaid Charges)",
+				"icon": "$(sync)"
+			},
+			{
+				"command": "museSpark.showBillingDetails",
+				"title": "Muse Spark: Show Live Billing Details",
+				"icon": "$(credit-card)"
+			},
+			{
+				"command": "museSpark.copyBillingSummary",
+				"title": "Muse Spark: Copy Billing Summary to Clipboard"
+			},
+			{
+				"command": "museSpark.sessionStats",
+				"title": "Muse Spark: Show Session Stats (Codex-like)"
+			},
+			{
+				"command": "museSpark.deleteSession",
+				"title": "Muse Spark: Delete Session"
+			},
+			{
+				"command": "museSpark.renameSession",
+				"title": "Muse Spark: Rename Session"
+			},
+			{
+				"command": "museSpark.exportSession",
+				"title": "Muse Spark: Export Session Transcript"
+			},
+			{
+				"command": "museSpark.togglePlanMode",
+				"title": "Muse Spark: Toggle Plan Mode (Off / Plan)",
+				"icon": "$(checklist)"
+			},
+			{
+				"command": "museSpark.approvePlan",
+				"title": "Muse Spark: Approve Plan & Execute"
+			},
+			{
+				"command": "museSpark.showPlan",
+				"title": "Muse Spark: Show / Edit Current Plan"
 			}
 		],
 		"menus": {
@@ -192,9 +235,44 @@
 				},
 				{
 					"command": "museSpark.copyCostSummary"
+				},
+				{
+					"command": "museSpark.refreshBilling"
+				},
+				{
+					"command": "museSpark.showBillingDetails"
+				},
+				{
+					"command": "museSpark.copyBillingSummary"
+				},
+				{
+					"command": "museSpark.sessionStats"
+				},
+				{
+					"command": "museSpark.deleteSession"
+				},
+				{
+					"command": "museSpark.renameSession"
+				},
+				{
+					"command": "museSpark.exportSession"
+				},
+				{
+					"command": "museSpark.togglePlanMode"
+				},
+				{
+					"command": "museSpark.approvePlan"
+				},
+				{
+					"command": "museSpark.showPlan"
 				}
 			],
 			"view/title": [
+				{
+					"command": "museSpark.togglePlanMode",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
 				{
 					"command": "museSpark.newSession",
 					"when": "view == museSpark.chatView",
@@ -212,6 +290,16 @@
 				},
 				{
 					"command": "museSpark.showCostTracker",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
+				{
+					"command": "museSpark.refreshBilling",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
+				{
+					"command": "museSpark.showBillingDetails",
 					"when": "view == museSpark.chatView",
 					"group": "navigation"
 				}
@@ -234,13 +322,8 @@
 				"museSpark.approvalMode": {
 					"type": "string",
 					"default": "fullAccess",
-					"enum": ["readOnly", "auto", "fullAccess"],
-					"enumDescriptions": [
-						"Read-only / Suggest: agent can read and propose patches but never writes or runs commands without explicit approval.",
-						"Auto: agent can edit files and run workspace-scoped commands; risky operations still prompt.",
-						"Full Access (yolo): agent runs with --yolo, no approvals or sandbox (like Codex full-access)."
-					],
-					"description": "Codex-style approval policy for agent actions."
+					"enum": ["fullAccess"],
+					"description": "Always Full Access: Muse runs with --yolo and coding actions do not prompt."
 				},
 				"museSpark.cliFullAccess": {
 					"type": "boolean",
@@ -312,6 +395,35 @@
 					"type": "string",
 					"default": "You are Muse Spark, an autonomous coding agent inside VS Code (Codex-style). Inspect the workspace before making assumptions. Use update_plan to track multi-step work, apply_patch for edits, and verification tools before declaring completion. Be concise and evidence-driven.",
 					"description": "System prompt for agentic chat"
+				},
+				"museSpark.billingEndpoint": {
+					"type": "string",
+					"default": "",
+					"description": "Override endpoint for live unpaid charges. Leave empty to auto-derive from museSpark.apiEndpoint (e.g. https://api.meta.ai/v1/billing/balance). Fetched every billingRefreshIntervalMinutes when an API key is set."
+				},
+				"museSpark.billingAutoRefresh": {
+					"type": "boolean",
+					"default": true,
+					"description": "Auto-refresh live unpaid charges in the background"
+				},
+				"museSpark.billingRefreshIntervalMinutes": {
+					"type": "number",
+					"default": 5,
+					"minimum": 1,
+					"maximum": 60,
+					"description": "Polling interval (minutes) for live unpaid charges. Default 5. Requires museSpark.billingAutoRefresh."
+				},
+				"museSpark.showBillingStatus": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show live unpaid charges in the status bar (right side). Click to see breakdown."
+				},
+				"museSpark.planMode": {
+					"type": "string",
+					"default": "off",
+					"enum": ["off", "plan"],
+					"enumDescriptions": ["Normal execution — agent edits and runs commands directly", "Plan mode — agent only produces a plan, no file edits or terminal commands until approved"],
+					"description": "Plan mode for Muse Spark. In plan mode the agent must use update_plan and is blocked from writing files or running commands until you approve."
 				}
 			}
 		}

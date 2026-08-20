@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import { ChatViewProvider } from './chatPanel';
 import { SparkClient } from './sparkClient';
 import { CostTracker } from './costTracker';
+import { BillingTracker } from './billingTracker';
 import { MuseLanguageModelProvider, configureMuseLanguageModel } from './languageModelProvider';
-import { resolveApprovalMode } from './sessionStore';
+import { resolveApprovalMode, resolvePlanMode } from './sessionStore';
 
 let chatProvider: ChatViewProvider;
 let statusBarItem: vscode.StatusBarItem;
@@ -41,8 +42,9 @@ function updateStatusBar() {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  // Init live cost tracker first (creates right-side status bar item)
+  // Init live cost + billing trackers (status bars)
   const costTracker = CostTracker.init(context);
+  const billingTracker = BillingTracker.init(context);
 
   context.subscriptions.push(
     vscode.lm.registerLanguageModelChatProvider('muse-spark', new MuseLanguageModelProvider(context.secrets)),
@@ -53,7 +55,11 @@ export function activate(context: vscode.ExtensionContext) {
   chatProvider = new ChatViewProvider(context.extensionUri, context);
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatProvider)
+    vscode.window.registerWebviewViewProvider(
+      ChatViewProvider.viewType,
+      chatProvider,
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
   );
 
   // Pricing mode status bar (left side)
@@ -62,10 +68,13 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(statusBarItem);
   updateStatusBar();
 
-  // Forward cost updates to chat webview
+  // Forward cost + live billing updates to chat webview
   context.subscriptions.push(
     costTracker.onDidUpdate(totals => {
       chatProvider.updateCostTotals(totals, costTracker.getLastRecord());
+    }),
+    billingTracker.onDidUpdate(info => {
+      chatProvider.updateBillingInfo(info);
     })
   );
 
@@ -73,6 +82,16 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeConfiguration(e => {
       if (e.affectsConfiguration('museSpark')) {
         updateStatusBar();
+        if (e.affectsConfiguration('museSpark.planMode')) {
+          chatProvider?.updatePlanMode(resolvePlanMode());
+        }
+        if (e.affectsConfiguration('museSpark.billingAutoRefresh') || e.affectsConfiguration('museSpark.billingRefreshIntervalMinutes') || e.affectsConfiguration('museSpark.showBillingStatus') || e.affectsConfiguration('museSpark.billingEndpoint') || e.affectsConfiguration('museSpark.apiKey') || e.affectsConfiguration('museSpark.apiEndpoint')) {
+          billingTracker.restartPolling();
+          void billingTracker.refreshNow();
+          // push latest to webview too
+          const info = billingTracker.getLastInfo();
+          if (info) chatProvider.updateBillingInfo(info);
+        }
       }
     })
   );
@@ -83,6 +102,52 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('museSpark.newSession', () => chatProvider.newSession()),
     vscode.commands.registerCommand('museSpark.forkSession', () => chatProvider.forkSession()),
     vscode.commands.registerCommand('museSpark.listSessions', async () => chatProvider.listSessions()),
+    vscode.commands.registerCommand('museSpark.sessionStats', async () => {
+      const s = chatProvider.getSessionStats();
+      if (!s) { vscode.window.showInformationMessage('No active session'); return; }
+      const all = chatProvider.getAllSessionsStats();
+      const totalMsgs = all.reduce((a, b) => a + b.total, 0);
+      const totalTokens = all.reduce((a, b) => a + b.tokens, 0);
+      const lines = [
+        `# Spark Session Stats — Codex style`,
+        ``,
+        `**Active: ${s.title} (${s.id.slice(0, 8)})** — ${s.stats.total} msgs (${s.stats.user} user / ${s.stats.assistant} assistant) • ~${s.stats.tokens} tokens • ${s.stats.images} images`,
+        s.createdAt ? `Created ${new Date(s.createdAt).toLocaleString()}${s.updatedAt ? ` • Updated ${new Date(s.updatedAt).toLocaleString()}` : ''}` : '',
+        `Model: ${s.model}`,
+        ``,
+        `**All sessions: ${all.length} • ${totalMsgs} msgs • ~${totalTokens} tokens**`,
+        ``,
+        ...all.slice(0, 20).map(e => `- \`${e.session.id.slice(0,8)}\` **${e.session.title}** — ${e.total} msgs • ~${e.tokens} tok • ${new Date(e.session.updatedAt || e.session.createdAt).toLocaleDateString()} • _${e.preview.slice(0, 80)}_`),
+      ];
+      if (all.length > 20) lines.push(`_…and ${all.length - 20} more_`);
+      // Also render in chat
+      (chatProvider as any).showStatsInChat?.();
+      const doc = await vscode.workspace.openTextDocument({ content: lines.join('\n'), language: 'markdown' });
+      await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+    }),
+    vscode.commands.registerCommand('museSpark.deleteSession', async () => {
+      const all = chatProvider.getAllSessionsStats();
+      if (!all.length) { vscode.window.showInformationMessage('No sessions to delete'); return; }
+      const pick = await vscode.window.showQuickPick(all.map(e => ({ label: e.session.title, description: `${e.total} msgs • ${e.session.id.slice(0,8)}`, detail: e.preview.slice(0,80), id: e.session.id })), { title: 'Delete Spark Session' });
+      if (!pick) return;
+      const ok = await vscode.window.showWarningMessage(`Delete "${(pick as any).label}"?`, { modal: true }, 'Delete');
+      if (ok === 'Delete') await chatProvider.deleteSession((pick as any).id);
+    }),
+    vscode.commands.registerCommand('museSpark.renameSession', async () => {
+      const all = chatProvider.getAllSessionsStats();
+      if (!all.length) { vscode.window.showInformationMessage('No sessions'); return; }
+      const pick = await vscode.window.showQuickPick(all.map(e => ({ label: e.session.title, description: e.session.id.slice(0,8), id: e.session.id })), { title: 'Rename Spark Session' });
+      if (!pick) return;
+      const title = await vscode.window.showInputBox({ prompt: 'New title', value: (pick as any).label });
+      if (title) await chatProvider.renameSession((pick as any).id, title);
+    }),
+    vscode.commands.registerCommand('museSpark.exportSession', async () => {
+      const all = chatProvider.getAllSessionsStats();
+      if (!all.length) { vscode.window.showInformationMessage('No sessions'); return; }
+      const pick = await vscode.window.showQuickPick(all.map(e => ({ label: e.session.title, description: e.session.id.slice(0,8), id: e.session.id })), { title: 'Export Spark Session' });
+      if (!pick) return;
+      await chatProvider.exportSession((pick as any).id);
+    }),
     vscode.commands.registerCommand('museSpark.showDiff', async () => {
       // Parity: show git diff for files touched in this session first, fallback to SCM view
       const folder = vscode.workspace.workspaceFolders?.[0];
@@ -187,6 +252,32 @@ export function activate(context: vscode.ExtensionContext) {
       await vscode.env.clipboard.writeText(summary);
       vscode.window.showInformationMessage('Cost summary copied to clipboard.');
     }),
+
+    vscode.commands.registerCommand('museSpark.refreshBilling', async () => {
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'Muse Spark: refreshing live billing…' }, async () => {
+        const info = await billingTracker.refreshNow();
+        if (info?.error) vscode.window.showWarningMessage(`Billing refresh: ${info.error}`);
+        else vscode.window.showInformationMessage(`Live unpaid: $${(info?.unpaid ?? 0).toFixed(4)} ${info?.currency ?? 'USD'}`);
+      });
+    }),
+
+    vscode.commands.registerCommand('museSpark.showBillingDetails', async () => {
+      chatProvider.reveal();
+      // Also open markdown preview with full breakdown
+      const summary = billingTracker.getSummaryMarkdown();
+      const doc = await vscode.workspace.openTextDocument({ content: summary, language: 'markdown' });
+      await vscode.window.showTextDocument(doc, { preview: true, viewColumn: vscode.ViewColumn.Beside });
+    }),
+
+    vscode.commands.registerCommand('museSpark.copyBillingSummary', async () => {
+      const summary = billingTracker.getSummaryMarkdown();
+      await vscode.env.clipboard.writeText(summary);
+      vscode.window.showInformationMessage('Billing summary copied to clipboard.');
+    }),
+
+    vscode.commands.registerCommand('museSpark.togglePlanMode', () => chatProvider.togglePlanMode()),
+    vscode.commands.registerCommand('museSpark.approvePlan', () => chatProvider.approvePlan()),
+    vscode.commands.registerCommand('museSpark.showPlan', () => chatProvider.showPlan()),
 
     vscode.commands.registerCommand('museSpark.startChat', () => {
       vscode.commands.executeCommand('museSpark.chatView.focus');
