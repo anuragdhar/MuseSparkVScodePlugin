@@ -64,7 +64,8 @@ async function main() {
   assert.deepEqual(JSON.parse(JSON.stringify(sent)), {
     type: 'send',
     text: 'Automated send test',
-    includeContext: true
+    includeContext: true,
+    images: []
   });
   assert.ok(hostMessages.some(message => message.type === 'addMessage'), 'host received and echoed the user message');
   assert.ok(hostMessages.some(message => message.type === 'startStream'), 'host started the response');
