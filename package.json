@@ -1,0 +1,336 @@
+{
+	"name": "muse-spark-vscode",
+	"displayName": "Muse Spark 1.2",
+	"description": "VS Code integration for Muse Spark 1.2 - Codex-style agentic coding: approval modes, apply_patch, plan tracking, sessions, diff view, terminal & cost tracking",
+	"version": "0.4.0",
+	"publisher": "meta",
+	"engines": {
+		"vscode": "^1.134.0"
+	},
+	"categories": [
+		"AI",
+		"Other"
+	],
+	"activationEvents": [
+		"onStartupFinished"
+	],
+	"main": "./out/extension.js",
+	"contributes": {
+		"languageModelChatProviders": [
+			{
+				"vendor": "muse-spark",
+				"displayName": "Muse Spark",
+				"managementCommand": "museSpark.manageLanguageModelProvider"
+			}
+		],
+		"viewsContainers": {
+			"secondarySidebar": [
+				{
+					"id": "museSpark",
+					"title": "Muse Spark",
+					"icon": "resources/spark.svg"
+				}
+			]
+		},
+		"views": {
+			"museSpark": [
+				{
+					"type": "webview",
+					"id": "museSpark.chatView",
+					"name": "Spark 1.2 Chat"
+				}
+			]
+		},
+		"commands": [
+			{
+				"command": "museSpark.manageLanguageModelProvider",
+				"title": "Muse Spark: Configure Language Model Provider"
+			},
+			{
+				"command": "museSpark.startChat",
+				"title": "Muse Spark: Open Chat",
+				"icon": "$(comment-discussion)"
+			},
+			{
+				"command": "museSpark.stopAgent",
+				"title": "Muse Spark: Stop Agent",
+				"icon": "$(stop-circle)"
+			},
+			{
+				"command": "museSpark.newSession",
+				"title": "Muse Spark: New Agent Session",
+				"icon": "$(add)"
+			},
+			{
+				"command": "museSpark.forkSession",
+				"title": "Muse Spark: Fork Last Session"
+			},
+			{
+				"command": "museSpark.listSessions",
+				"title": "Muse Spark: List Sessions"
+			},
+			{
+				"command": "museSpark.showDiff",
+				"title": "Muse Spark: Show Last Diff",
+				"icon": "$(diff)"
+			},
+			{
+				"command": "museSpark.acceptEdits",
+				"title": "Muse Spark: Accept All Edits"
+			},
+			{
+				"command": "museSpark.undoEdits",
+				"title": "Muse Spark: Undo Last Agent Edits"
+			},
+			{
+				"command": "museSpark.explainCode",
+				"title": "Muse Spark: Explain Selection"
+			},
+			{
+				"command": "museSpark.refactorCode",
+				"title": "Muse Spark: Refactor Selection"
+			},
+			{
+				"command": "museSpark.fixCode",
+				"title": "Muse Spark: Fix Issues in Selection"
+			},
+			{
+				"command": "museSpark.generateDocs",
+				"title": "Muse Spark: Generate Docs"
+			},
+			{
+				"command": "museSpark.generateCode",
+				"title": "Muse Spark: Generate Code from Comment"
+			},
+			{
+				"command": "museSpark.togglePricingMode",
+				"title": "Muse Spark: Toggle Contributor / Standard Mode",
+				"icon": "$(sync)"
+			},
+			{
+				"command": "museSpark.setApprovalMode",
+				"title": "Muse Spark: Set Approval Mode (Read-Only / Auto / Full Access)"
+			},
+			{
+				"command": "museSpark.showCostTracker",
+				"title": "Muse Spark: Show Cost Tracker",
+				"icon": "$(dashboard)"
+			},
+			{
+				"command": "museSpark.resetCostTracker",
+				"title": "Muse Spark: Reset Cost Tracker"
+			},
+			{
+				"command": "museSpark.copyCostSummary",
+				"title": "Muse Spark: Copy Cost Summary to Clipboard"
+			}
+		],
+		"menus": {
+			"editor/context": [
+				{
+					"command": "museSpark.explainCode",
+					"group": "museSpark"
+				},
+				{
+					"command": "museSpark.refactorCode",
+					"group": "museSpark"
+				},
+				{
+					"command": "museSpark.fixCode",
+					"group": "museSpark"
+				},
+				{
+					"command": "museSpark.generateDocs",
+					"group": "museSpark"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "museSpark.startChat"
+				},
+				{
+					"command": "museSpark.stopAgent"
+				},
+				{
+					"command": "museSpark.newSession"
+				},
+				{
+					"command": "museSpark.forkSession"
+				},
+				{
+					"command": "museSpark.listSessions"
+				},
+				{
+					"command": "museSpark.showDiff"
+				},
+				{
+					"command": "museSpark.explainCode"
+				},
+				{
+					"command": "museSpark.refactorCode"
+				},
+				{
+					"command": "museSpark.fixCode"
+				},
+				{
+					"command": "museSpark.generateDocs"
+				},
+				{
+					"command": "museSpark.generateCode"
+				},
+				{
+					"command": "museSpark.togglePricingMode"
+				},
+				{
+					"command": "museSpark.setApprovalMode"
+				},
+				{
+					"command": "museSpark.showCostTracker"
+				},
+				{
+					"command": "museSpark.resetCostTracker"
+				},
+				{
+					"command": "museSpark.copyCostSummary"
+				}
+			],
+			"view/title": [
+				{
+					"command": "museSpark.newSession",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
+				{
+					"command": "museSpark.stopAgent",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
+				{
+					"command": "museSpark.showDiff",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				},
+				{
+					"command": "museSpark.showCostTracker",
+					"when": "view == museSpark.chatView",
+					"group": "navigation"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Muse Spark",
+			"properties": {
+				"museSpark.backend": {
+					"type": "string",
+					"default": "cli",
+					"enum": ["cli", "api"],
+					"description": "Use the official Muse Code CLI agent harness or the extension's built-in Codex-style direct API agent."
+				},
+				"museSpark.cliPath": {
+					"type": "string",
+					"default": "/root/.local/bin/muse",
+					"description": "Muse Code executable path inside the Ubuntu WSL distribution."
+				},
+				"museSpark.approvalMode": {
+					"type": "string",
+					"default": "fullAccess",
+					"enum": ["readOnly", "auto", "fullAccess"],
+					"enumDescriptions": [
+						"Read-only / Suggest: agent can read and propose patches but never writes or runs commands without explicit approval.",
+						"Auto: agent can edit files and run workspace-scoped commands; risky operations still prompt.",
+						"Full Access (yolo): agent runs with --yolo, no approvals or sandbox (like Codex full-access)."
+					],
+					"description": "Codex-style approval policy for agent actions."
+				},
+				"museSpark.cliFullAccess": {
+					"type": "boolean",
+					"default": true,
+					"description": "Deprecated: use museSpark.approvalMode. Kept for backward compatibility.",
+					"deprecationMessage": "Use museSpark.approvalMode instead."
+				},
+				"museSpark.thinking": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show agent reasoning/thinking blocks in chat (Codex-style)."
+				},
+				"museSpark.cliReasoningEffort": {
+					"type": "string",
+					"default": "high",
+					"enum": ["none", "minimal", "low", "medium", "high", "xhigh", "ultra"],
+					"description": "Reasoning effort used by the Muse Code CLI backend."
+				},
+				"museSpark.cliMaxSteps": {
+					"type": "number",
+					"default": 50,
+					"minimum": 1,
+					"maximum": 500,
+					"description": "Maximum model steps for each Muse Code task."
+				},
+				"museSpark.autoVerify": {
+					"type": "boolean",
+					"default": true,
+					"description": "After edits, automatically check diagnostics and ask agent to fix failures (Codex verify loop)."
+				},
+				"museSpark.apiKey": {
+					"type": "string",
+					"default": "",
+					"description": "API Key for Meta AI / Muse Spark. Leave empty to use local mock mode.",
+					"scope": "application"
+				},
+				"museSpark.apiEndpoint": {
+					"type": "string",
+					"default": "https://api.meta.ai/v1/chat/completions",
+					"description": "API endpoint for Muse Spark 1.2 compatible chat completions"
+				},
+				"museSpark.model": {
+					"type": "string",
+					"default": "muse-spark-1.2-contributor",
+					"enum": [
+						"muse-spark-1.2",
+						"muse-spark-1.2-contributor",
+						"muse-spark-1.2-instruct",
+						"muse-spark-1.2-code"
+					],
+					"description": "Model ID to use"
+				},
+				"museSpark.useContributorPricing": {
+					"type": "boolean",
+					"default": true,
+					"description": "Use Contributor pricing ($0.10/M in, $0.20/M out) — data may be used for training."
+				},
+				"museSpark.showTokenCost": {
+					"type": "boolean",
+					"default": true,
+					"description": "Show live token count and cost in status bar and chat UI after each request"
+				},
+				"museSpark.enableInlineCompletion": {
+					"type": "boolean",
+					"default": true,
+					"description": "Enable inline completions powered by Spark 1.2"
+				},
+				"museSpark.systemPrompt": {
+					"type": "string",
+					"default": "You are Muse Spark, an autonomous coding agent inside VS Code (Codex-style). Inspect the workspace before making assumptions. Use update_plan to track multi-step work, apply_patch for edits, and verification tools before declaring completion. Be concise and evidence-driven.",
+					"description": "System prompt for agentic chat"
+				}
+			}
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"lint": "eslint src --ext ts"
+	},
+	"devDependencies": {
+		"@types/node": "20.x",
+		"@types/vscode": "^1.134.0",
+		"jsdom": "^30.0.1",
+		"typescript": "^5.3.3"
+	},
+	"__metadata": {
+		"installedTimestamp": 1787204697865,
+		"targetPlatform": "undefined",
+		"size": 138524
+	}
+}
